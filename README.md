@@ -39,35 +39,35 @@ Create a `.env` file in the root directory and add your Google API key:
 GOOGLE_API_KEY=your_api_key_here
 ```
 
-## Usage
+## Running with ADK Web Interface
 
-The REST agent can be used to make HTTP GET requests to any URL. Here's how to use it:
-
-```python
-from rest_agent.agent import root_agent
-
-# Example: Get data from a public API
-response = root_agent.run("Get data from https://api.github.com/users/google")
-print(response)
+1. Make sure you're in the project directory and your virtual environment is activated:
+```bash
+cd rest_agent
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-The agent will return a structured response in the following format:
-```python
-{
-    "success": True,
-    "status_code": 200,
-    "data": {...}  # Response data (JSON or text)
-}
+2. Start the ADK web interface:
+```bash
+adk web
 ```
 
-Or in case of an error:
-```python
-{
-    "success": False,
-    "status_code": 404,  # If applicable
-    "error": "Error message"
-}
+3. Open your web browser and navigate to:
 ```
+http://localhost:8000
+```
+
+4. In the ADK web interface:
+   - Select the "rest_agent" from the list of available agents
+   - You can now interact with the agent through the chat interface
+   - Try commands like:
+     - "Get data from https://api.github.com/users/google"
+     - "Make a request to https://jsonplaceholder.typicode.com/posts/1"
+
+The agent will respond with structured data in the chat interface, showing:
+- Success/failure status
+- HTTP status code
+- Response data or error message
 
 ## Dependencies
 
