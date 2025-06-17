@@ -7,4 +7,5 @@ python-dotenv==1.1.0
 psycopg2-binary==2.9.9
 pandas==2.2.0
 deprecated==1.2.14
-difflib==0.10.0
+flask==3.0.0
+twilio==8.10.0
