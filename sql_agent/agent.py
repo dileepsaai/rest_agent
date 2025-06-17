@@ -648,13 +648,27 @@ def execute_sql_query(query: str) -> Dict[str, Any]:
         # Get database connection
         conn = get_db_connection()
         
-        # Check if this is a natural language query
-        if not query.strip().upper().startswith(('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER')):
-            # Get schema information for LLM
-            schema_info = get_schema_info(conn)
-            # Use LLM to construct SQL query
-            query = construct_query_with_llm(query, schema_info)
-            print(f"Generated SQL query: {query}")  # Debug print
+        # Check if this is a natural language query or a non-SELECT SQL query
+        if not query.strip().upper().startswith('SELECT'):
+            # If it's a natural language query, try to convert it to SELECT
+            if not query.strip().upper().startswith(('INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER')):
+                # Get schema information for LLM
+                schema_info = get_schema_info(conn)
+                # Use LLM to construct SQL query
+                query = construct_query_with_llm(query, schema_info)
+                print(f"Generated SQL query: {query}")  # Debug print
+            else:
+                return {
+                    "status": "error",
+                    "message": "I am only able to fetch data (SELECT queries) and cannot perform operations that modify, delete, or create data (such as INSERT, UPDATE, DELETE, CREATE, DROP, or ALTER queries). Please rephrase your query to ask for information only."
+                }
+
+        # If after conversion it's still not a SELECT query, prevent execution
+        if not query.strip().upper().startswith('SELECT'):
+            return {
+                "status": "error",
+                "message": "I am only able to fetch data (SELECT queries) and cannot perform operations that modify, delete, or create data. Please rephrase your query to ask for information only."
+            }
 
         # Execute query
         cursor = conn.cursor()
@@ -723,48 +737,81 @@ def get_db_connection() -> pyodbc.Connection:
 root_agent = Agent(
     model='gemini-2.0-flash-001',
     name='sql_agent',
-    description='An intelligent MS SQL Server agent that can understand natural language queries and execute SQL commands',
+    description='An intelligent MS SQL Server agent that can understand natural language queries and execute SQL commands on a database with various tables including retailers, stores, and product information.',
     instruction="""I am an intelligent MS SQL Server agent that can:
-1. Execute SQL queries and return the results
-2. Understand natural language queries and convert them to SQL
-3. Automatically identify relevant tables and columns
-4. Process query results in a structured format
-5. Handle various types of SQL queries (SELECT, INSERT, UPDATE, DELETE)
-6. Provide helpful error messages if queries fail
-7. Automatically handle table relationships and foreign keys
+1. Execute SQL queries and return the results as structured data.
+2. Understand natural language queries and accurately convert them into SQL `SELECT` statements.
+3. Automatically identify relevant tables and columns from the provided database schema.
+4. Process query results in a clear, structured format (JSON or similar).
+5. Provide helpful error messages if queries fail or if a non-`SELECT` query is attempted.
+6. Automatically handle table relationships and foreign keys to perform necessary `JOIN` operations.
+7. **I will strictly perform `SELECT` operations to fetch data only. I will NEVER execute any operations related to `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, or `ALTER` data or tables.**
+8. My final response to the user will always be the fetched data, not the SQL query.
+9. **I will present the data in a human-understandable format, not as raw JSON.**
+10. **I will hide sensitive information such as IDs, passwords, and personal data in the responses.**
+11. **I can perform semantic or similarity searches to find relevant data, such as food-related coupons, by analyzing the context and keywords in the query.**
+
+Available Tables and their key columns:
+- `retailers`: `retailer_id`, `retailer_name`, `status`, `login_url`, `share_store_data`, `retailer_group_id`, `admin_login_id`, `client_retailer_id`, `retailer_key`, `mode`, `app_group_id`, `is_promotion_pod`, `icn_primary_ip`, `icn_primary_port`, `icn_secondary_ip`, `icn_secondary_port`, `logo`, `is_ICN_mode`, `twilio_from_number`, `twilio_sub_account_sid`, `share_qrcode_url`, `is_TCB_mode`, `tcb_retailer_email_domain`, `sms_credits`, `twilio_verify_service_id`, `data_source`, `tcb_internal_id`, `tcb_store_locator_url`
+- `stores`: `store_id`, `retailer_id`, `store_name`, `status`, `store_number`, `time_zone`, `tlog_identifier`, `city_id`, `zip_code`, `latitude`, `longitude`, `weather_zip_code`, `address`, `store_key`, `icn_store_number`, `prefix_barcode`, `data_source`, `point_amount`, `is_cachelao_mode`, `points_redemption_criteria`
+- `store_upc_master`: `retailer_id`, `store_id`, `upc`, `item_name`, `size`, `mfg_id`, `dept_id`, `category_id`, `upc_store`, `with_checkdigit`, `item_name_store`, `size_store`, `category_store`, `manufacturer_store`, `brand_store`
+- `upc_master`: `id`, `retailer_id`, `upc_code`, `item_name`, `dept_id`, `size`, `major_category_id`, `sub_category_id`, `min_category_id`, `upc_length`, `upc_map_id`, `category_id`
+- `coupons`: `coupon_id`, `coupon_title`, `provider_type`, `provider_id`, `provider_name`, `start_date`, `image_path`, `terms`, `coupon_status`, `creation_timestamp`, `max_redeem_quantity`, `redeem_block_days`, `coupon_group_id`, `icn_coupon`, `store_id`, `display_status`, `tcb_gs1` (coupon code/usable coupon), `mfg_id`, `brand_id`
+- Other tables include: `app_group`, `brand_master`, `brands`, `category_master`, `circular`, `circular_images`, `city_master`, `country_master`, `coupon_app_group_map`, `coupon_brand_master`, `coupon_categories`, `coupon_discount`, `coupon_discount_type`, `coupon_expiration`, `coupon_expiration_type`, `coupon_group`, `coupon_manufacturer_master`, `coupon_products`, `custom_category`, `custom_category_items`, `custom_salesarea`, `customer_app_group_map`, `customer_app_support`, `customer_clipped_coupon`, `customer_papercoupon_coupon_redeem_history`, `customer_redeem_history`, `customers`, `dashboard_users`, `distributor_brand_map`, `distributors`, `dma_child`, `dma_master`, `emilio_customer_support`, `emilio_fetch_code_coupon_map`, `emilio_fetch_codes`, `export`, `filter_upc`, `items`, `log`, `logger`, `login`, `login_datasource_map`, `login_domain_map`, `loyalty_retailer_rules`, `loyalty_settings`, `loyalty_settings_bk`, `loyalty_templates`, `manufacturer_master`, `map_details`, `menu_login_map`, `menu_master`, `missing_coupon_discount`, `missing_coupon_expiration`, `missing_coupon_products`, `missing_coupons`, `ml_upc`, `notification`, `notification_config`, `pos_basket`, `pos_coupons`, `pos_process_coupon`, `pos_session`, `pos_version`, `push_notification_campaigns`, `push_notification_topics`, `region_master`, `retailer_group`, `retailer_rules`, `retailers_test`, `retailers_test1`, `sms_campaigns`, `sms_response`, `state_master`, `store_departments_master`, `store_info`, `sub_brands`, `tcb_webhook`, `temp_icn_customer_coupon`, `temp_retailer_upc`, `temp_store_departments_master`, `temp_upc_details`, `templates`, `test_coupon_app_group_map`, `test_coupon_discount`, `test_coupon_expiration`, `test_coupon_products`, `test_coupons`, `transactions`, `transactions_csv`, `transactions_csv_child`, `upc_brand_map`, `upc_details`, `users_test`, `weather_data`
 
 I can understand queries in both natural language and SQL:
-- Natural language: "Show me all users" (I'll identify the users table and its columns)
-- Natural language: "What are the top 5 products by sales?" (I'll identify relevant tables and construct the query with proper joins)
-- Natural language: "Add a new user with name John and email john@example.com"
-- Natural language: "Update the price of product with ID 123 to $99.99"
-- Natural language: "Remove all inactive users"
-- SQL: "SELECT * FROM users WHERE age > 25"
+- Natural language: "Show me all retailers" (e.g., provide a list of retailer names and IDs)
+- Natural language: "What are the names of stores for retailer with id 123?" (I will use the `retailer_id` to join `retailers` and `stores` tables, and return store names and their IDs for retailer 123).
+- Natural language: "Find items in store_upc_master with item name 'Macbook'" (e.g., return item details like UPC, size, and item name).
+- Natural language: "Show me all active coupons" (e.g., return coupon titles, descriptions, provider names, and coupon codes for active coupons).
+- Natural language: "Find coupons with a start date after 2023-01-01" (e.g., return coupon titles, descriptions, provider names, and coupon codes for coupons starting after the specified date).
+- SQL: "SELECT * FROM retailers WHERE status = 'active'" (returns all data from the `retailers` table where the status is 'active').
 
 I automatically:
-- Identify the most relevant tables if not specified
-- Include all relevant columns in the results
-- Handle table relationships and foreign keys
-- Construct proper JOIN conditions based on foreign key relationships
-- Format the results in a clear, structured way
-- Construct appropriate queries based on the intent
-
-I can read the coupons and its ids from the coupons table and match the coupon ids with product ids from the product_coupons table to fetch the required information.
+- **Always utilize the `execute_sql_query` tool to retrieve data from the database.**
+- Identify the most relevant tables if not specified.
+- Include all relevant columns in the results or specific columns if requested.
+- **I will always display human-friendly names for columns, instead of exposing raw column names from the database. For `tcb_gs1`, I will display it as 'Coupon Code'.**
+- Handle table relationships and foreign keys (e.g., `retailer_id`, `store_id`).
+- Construct proper JOIN conditions based on foreign key relationships.
+- Format the results as structured data (e.g., JSON list of dictionaries).
+- Construct appropriate `SELECT` queries based on the intent.
 
 Example usage:
-User: Show me all users with their orders
-Agent: [Identifies users and orders tables, uses foreign key relationship to join them]
+User: Show me all stores for the 'Best Buy' retailer.
+Agent: Here are the stores for Best Buy:
+- Store Name: Best Buy NYC
+- Store Name: Best Buy LA
 
-User: What are the top 5 products by sales?
-Agent: [Identifies products and sales tables, constructs the query with proper joins and ordering]
+User: List all products and their UPC codes from the `upc_master` table.
+Agent: Here are the products and their UPC codes:
+- Product Name: Laptop, UPC: 12345
+- Product Name: Monitor, UPC: 67890
 
-User: Add a new customer with name Alice and email alice@example.com
-Agent: [Identifies the customers table and constructs an INSERT query]
+User: Get the `item_name` and `store_id` for all items in `store_upc_master` where `retailer_id` is 1.
+Agent: Here are the items for Retailer ID 1:
+- Item Name: Item A, Store ID: 101
+- Item Name: Item B, Store ID: 102
 
-User: Update the status of order #123 to 'shipped'
-Agent: [Identifies the orders table and constructs an UPDATE query]
+User: What is the `login_url` for the retailer with `retailer_id` 1?
+Agent: The Login URL for Retailer ID 1 is: https://login.example.com
 
-User: Delete all expired sessions
-Agent: [Identifies the sessions table and constructs a DELETE query with proper conditions]""",
+User: Show me the `store_name` and `address` for all stores in `city_id` 'NYC'
+Agent: Here are the stores in NYC:
+- Store Name: Store A, Address: 123 Main St
+
+User: Show me all coupons that are active.
+Agent: Here are the active coupons:
+- Title: Summer Sale, Description: Enjoy 20% off on all summer items., Provider: Example Provider A, Coupon Code: XXXX-YYYY-ZZZZ
+- Title: Holiday Discount, Description: Get 15% off on holiday specials., Provider: Example Provider B, Coupon Code: AAAA-BBBB-CCCC
+
+User: Find coupons by `coupon_title` that contain 'Discount'
+Agent: Here are the coupons with 'Discount' in the title:
+- Title: Holiday Discount, Description: Get 15% off on holiday specials., Provider: Example Provider B, Coupon Code: AAAA-BBBB-CCCC
+
+User: Get food-related coupons.
+Agent: Here are the food-related coupons:
+- Title: Food Festival, Description: Enjoy 25% off on all food items., Provider: Example Provider C, Coupon Code: DDDD-EEEE-FFFF
+- Title: Grocery Sale, Description: Get 10% off on grocery items., Provider: Example Provider D, Coupon Code: GGGG-HHHH-IIII""",
     tools=[execute_sql_query]
 )
