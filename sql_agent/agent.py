@@ -43,29 +43,26 @@ def get_table_constraints(conn: pyodbc.Connection) -> Dict[str, Dict[str, Any]]:
     # Get primary keys
     pk_query = """
     SELECT 
-        t.name AS table_name,
+        OBJECT_NAME(t.object_id) AS table_name,
         c.name AS column_name
     FROM sys.tables t
     INNER JOIN sys.indexes i ON t.object_id = i.object_id
     INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
     INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
     WHERE i.is_primary_key = 1
-    ORDER BY t.name, ic.key_ordinal;
+    ORDER BY OBJECT_NAME(t.object_id), ic.key_ordinal;
     """
     
     # Get foreign keys
     fk_query = """
     SELECT 
-        t1.name AS table_name,
-        c1.name AS column_name,
-        t2.name AS foreign_table_name,
-        c2.name AS foreign_column_name
+        OBJECT_NAME(fk.parent_object_id) AS table_name,
+        COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS column_name,
+        OBJECT_NAME(fk.referenced_object_id) AS foreign_table_name,
+        COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS foreign_column_name
     FROM sys.foreign_keys fk
-    INNER JOIN sys.tables t1 ON fk.parent_object_id = t1.object_id
-    INNER JOIN sys.tables t2 ON fk.referenced_object_id = t2.object_id
     INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-    INNER JOIN sys.columns c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
-    INNER JOIN sys.columns c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id;
+    ORDER BY OBJECT_NAME(fk.parent_object_id);
     """
     
     pk_df = pd.read_sql(pk_query, conn)
@@ -184,7 +181,17 @@ def get_table_schema(conn: pyodbc.Connection, table_name: str) -> Dict[str, List
     SELECT 
         c.name AS column_name,
         t.name AS data_type,
-        c.is_nullable
+        c.is_nullable,
+        CASE 
+            WHEN t.name IN ('varchar', 'nvarchar', 'char', 'nchar') 
+            THEN CAST(c.max_length AS VARCHAR) 
+            ELSE NULL 
+        END AS max_length,
+        CASE 
+            WHEN t.name IN ('decimal', 'numeric') 
+            THEN CAST(c.precision AS VARCHAR) + ',' + CAST(c.scale AS VARCHAR)
+            ELSE NULL 
+        END AS precision_scale
     FROM sys.columns c
     INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
     WHERE c.object_id = OBJECT_ID(?)
@@ -194,7 +201,9 @@ def get_table_schema(conn: pyodbc.Connection, table_name: str) -> Dict[str, List
     return {
         'columns': df['column_name'].tolist(),
         'types': df['data_type'].tolist(),
-        'nullable': df['is_nullable'].tolist()
+        'nullable': df['is_nullable'].tolist(),
+        'max_length': df['max_length'].tolist(),
+        'precision_scale': df['precision_scale'].tolist()
     }
 
 def get_all_tables(conn: pyodbc.Connection) -> List[str]:
@@ -208,12 +217,13 @@ def get_all_tables(conn: pyodbc.Connection) -> List[str]:
         List of table names
     """
     query = """
-    SELECT name AS table_name 
-    FROM sys.tables 
-    WHERE type = 'U';
+    SELECT TABLE_NAME 
+    FROM INFORMATION_SCHEMA.TABLES 
+    WHERE TABLE_TYPE = 'BASE TABLE'
+    ORDER BY TABLE_NAME;
     """
     df = pd.read_sql(query, conn)
-    return df['table_name'].tolist()
+    return df['TABLE_NAME'].tolist()
 
 def find_relevant_tables(query: str, tables: List[str], conn, constraints) -> List[str]:
     relevant_tables = []
@@ -385,20 +395,17 @@ def get_table_relationships(conn: pyodbc.Connection) -> Dict[str, List[Dict[str,
         conn: MS SQL Server connection
         
     Returns:
-        Dict mapping table names to their relationships
+        Dict containing table relationships
     """
     query = """
-    SELECT
-        t1.name AS table_name,
-        c1.name AS column_name,
-        t2.name AS foreign_table_name,
-        c2.name AS foreign_column_name
+    SELECT 
+        OBJECT_NAME(fk.parent_object_id) AS table_name,
+        COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS column_name,
+        OBJECT_NAME(fk.referenced_object_id) AS referenced_table,
+        COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS referenced_column
     FROM sys.foreign_keys fk
-    INNER JOIN sys.tables t1 ON fk.parent_object_id = t1.object_id
-    INNER JOIN sys.tables t2 ON fk.referenced_object_id = t2.object_id
     INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-    INNER JOIN sys.columns c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
-    INNER JOIN sys.columns c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id;
+    ORDER BY OBJECT_NAME(fk.parent_object_id);
     """
     df = pd.read_sql(query, conn)
     
@@ -410,10 +417,11 @@ def get_table_relationships(conn: pyodbc.Connection) -> Dict[str, List[Dict[str,
         relationships[table].append({
             'column': row['column_name'],
             'references': {
-                'table': row['foreign_table_name'],
-                'column': row['foreign_column_name']
+                'table': row['referenced_table'],
+                'column': row['referenced_column']
             }
         })
+    
     return relationships
 
 def construct_join_query(tables: List[str], relationships: Dict[str, List[Dict[str, str]]]) -> str:
@@ -637,16 +645,18 @@ def execute_sql_query(query: str) -> Dict[str, Any]:
     Execute SQL query and return results.
     """
     try:
+        # Get database connection
+        conn = get_db_connection()
+        
         # Check if this is a natural language query
         if not query.strip().upper().startswith(('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER')):
             # Get schema information for LLM
-            schema_info = get_schema_info(None)
+            schema_info = get_schema_info(conn)
             # Use LLM to construct SQL query
             query = construct_query_with_llm(query, schema_info)
             print(f"Generated SQL query: {query}")  # Debug print
 
         # Execute query
-        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(query)
         
@@ -691,15 +701,23 @@ def execute_sql_query(query: str) -> Dict[str, Any]:
             conn.close()
 
 def get_db_connection() -> pyodbc.Connection:
-    """Get a connection to the MS SQL Server database."""
+    """Get a connection to the MS SQL Server database using environment variables."""
+
+    server = os.getenv("DB_HOST", "localhost")
+    port = os.getenv("DB_PORT", "1433")
+    database = os.getenv("DB_NAME", "master")
+    username = os.getenv("DB_USER", "sa")
+    password = os.getenv("DB_PASSWORD", "YourStrong@Passw0rd")
+
     conn_str = (
         "DRIVER={ODBC Driver 18 for SQL Server};"
-        "SERVER=localhost,1433;"
-        "DATABASE=master;"
-        "UID=sa;"
-        "PWD=YourStrong@Passw0rd;"
+        f"SERVER={server},{port};"
+        f"DATABASE={database};"
+        f"UID={username};"
+        f"PWD={password};"
         "TrustServerCertificate=yes;"
     )
+
     return pyodbc.connect(conn_str)
 
 root_agent = Agent(
