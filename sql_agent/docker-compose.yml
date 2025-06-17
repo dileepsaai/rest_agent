@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: mssql-server
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      SA_PASSWORD: "YourStrong@Passw0rd"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'YourStrong@Passw0rd' -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  init-db:
+    image: mcr.microsoft.com/mssql-tools
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ./init.sql:/init.sql
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "/opt/mssql-tools/bin/sqlcmd -S mssql -U sa -P 'YourStrong@Passw0rd' -i /init.sql"
+
+  app:
+    build: .
+    platform: linux/amd64
+    environment:
+      DB_HOST: mssql
+      DB_NAME: master
+      DB_USER: sa
+      DB_PASSWORD: YourStrong@Passw0rd
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+    ports:
+      - "5000:5000"
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+
+volumes:
+  mssql_data:

@@ -1,5 +1,5 @@
-"""A MS SQL Server agent that can execute queries and retrieve data."""
-import pyodbc
+"""A PostgreSQL agent that can execute queries and retrieve data."""
+import psycopg2
 import pandas as pd
 from google.adk.agents import Agent
 from typing import Dict, Any, List, Optional, Tuple, Set
@@ -30,42 +30,41 @@ class CustomJSONEncoder(json.JSONEncoder):
             return float(obj)
         return super().default(obj)
 
-def get_table_constraints(conn: pyodbc.Connection) -> Dict[str, Dict[str, Any]]:
+def get_table_constraints(conn: psycopg2.extensions.connection) -> Dict[str, Dict[str, Any]]:
     """
     Get primary key and foreign key constraints for all tables.
     
     Args:
-        conn: MS SQL Server connection
+        conn: PostgreSQL connection
         
     Returns:
         Dict containing table constraints
     """
     # Get primary keys
     pk_query = """
-    SELECT 
-        t.name AS table_name,
-        c.name AS column_name
-    FROM sys.tables t
-    INNER JOIN sys.indexes i ON t.object_id = i.object_id
-    INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-    INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-    WHERE i.is_primary_key = 1
-    ORDER BY t.name, ic.key_ordinal;
+    SELECT
+        tc.table_name,
+        kc.column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kc
+        ON kc.constraint_name = tc.constraint_name
+    WHERE tc.constraint_type = 'PRIMARY KEY'
+    ORDER BY tc.table_name, kc.ordinal_position;
     """
     
     # Get foreign keys
     fk_query = """
-    SELECT 
-        t1.name AS table_name,
-        c1.name AS column_name,
-        t2.name AS foreign_table_name,
-        c2.name AS foreign_column_name
-    FROM sys.foreign_keys fk
-    INNER JOIN sys.tables t1 ON fk.parent_object_id = t1.object_id
-    INNER JOIN sys.tables t2 ON fk.referenced_object_id = t2.object_id
-    INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-    INNER JOIN sys.columns c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
-    INNER JOIN sys.columns c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id;
+    SELECT
+        tc.table_name AS table_name,
+        kcu.column_name AS column_name,
+        ccu.table_name AS foreign_table_name,
+        ccu.column_name AS foreign_column_name
+    FROM information_schema.table_constraints AS tc
+    JOIN information_schema.key_column_usage AS kcu
+        ON tc.constraint_name = kcu.constraint_name
+    JOIN information_schema.constraint_column_usage AS ccu
+        ON ccu.constraint_name = tc.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY';
     """
     
     pk_df = pd.read_sql(pk_query, conn)
@@ -169,26 +168,22 @@ def construct_join_conditions(tables: List[str], constraints: Dict[str, Dict[str
     
     return join_conditions
 
-def get_table_schema(conn: pyodbc.Connection, table_name: str) -> Dict[str, List[str]]:
+def get_table_schema(conn: psycopg2.extensions.connection, table_name: str) -> Dict[str, List[str]]:
     """
     Get the schema information for a table.
     
     Args:
-        conn: MS SQL Server connection
+        conn: PostgreSQL connection
         table_name: Name of the table
         
     Returns:
         Dict containing column names and their data types
     """
     query = """
-    SELECT 
-        c.name AS column_name,
-        t.name AS data_type,
-        c.is_nullable
-    FROM sys.columns c
-    INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-    WHERE c.object_id = OBJECT_ID(?)
-    ORDER BY c.column_id;
+    SELECT column_name, data_type, is_nullable
+    FROM information_schema.columns
+    WHERE table_name = %s
+    ORDER BY ordinal_position;
     """
     df = pd.read_sql(query, conn, params=(table_name,))
     return {
@@ -197,20 +192,20 @@ def get_table_schema(conn: pyodbc.Connection, table_name: str) -> Dict[str, List
         'nullable': df['is_nullable'].tolist()
     }
 
-def get_all_tables(conn: pyodbc.Connection) -> List[str]:
+def get_all_tables(conn: psycopg2.extensions.connection) -> List[str]:
     """
     Get all table names in the database.
     
     Args:
-        conn: MS SQL Server connection
+        conn: PostgreSQL connection
         
     Returns:
         List of table names
     """
     query = """
-    SELECT name AS table_name 
-    FROM sys.tables 
-    WHERE type = 'U';
+    SELECT table_name 
+    FROM information_schema.tables 
+    WHERE table_schema = 'public';
     """
     df = pd.read_sql(query, conn)
     return df['table_name'].tolist()
@@ -277,14 +272,14 @@ def extract_conditions(query: str) -> Tuple[str, List[str]]:
     
     return query, conditions
 
-def construct_query(query: str, tables: List[str], conn: pyodbc.Connection, constraints: Dict[str, Dict[str, Any]]) -> str:
+def construct_query(query: str, tables: List[str], conn: psycopg2.extensions.connection, constraints: Dict[str, Dict[str, Any]]) -> str:
     """
     Construct SQL query from natural language.
     
     Args:
         query: Natural language query
         tables: List of relevant tables
-        conn: MS SQL Server connection
+        conn: PostgreSQL connection
         constraints: Table constraints dictionary
         
     Returns:
@@ -302,7 +297,7 @@ def construct_query(query: str, tables: List[str], conn: pyodbc.Connection, cons
     else:
         return construct_select_query(query, tables, conn, constraints)
 
-def construct_select_query(query: str, tables: List[str], conn: pyodbc.Connection, constraints: Dict[str, Dict[str, Any]]) -> str:
+def construct_select_query(query: str, tables: List[str], conn: psycopg2.extensions.connection, constraints: Dict[str, Dict[str, Any]]) -> str:
     """Construct SELECT query."""
     base_query, conditions = extract_conditions(query)
     query_lower = query.lower()
@@ -349,7 +344,7 @@ def construct_select_query(query: str, tables: List[str], conn: pyodbc.Connectio
     
     return sql
 
-def construct_insert_query(query: str, tables: List[str], conn: pyodbc.Connection) -> str:
+def construct_insert_query(query: str, tables: List[str], conn: psycopg2.extensions.connection) -> str:
     """Construct INSERT query."""
     # Extract values from the query
     values_match = re.search(r'values?\s+(.+?)(?:\s+where|\s+$)', query.lower())
@@ -358,7 +353,7 @@ def construct_insert_query(query: str, tables: List[str], conn: pyodbc.Connectio
         return f"INSERT INTO {tables[0]} VALUES ({values})"
     return ""
 
-def construct_update_query(query: str, tables: List[str], conn: pyodbc.Connection) -> str:
+def construct_update_query(query: str, tables: List[str], conn: psycopg2.extensions.connection) -> str:
     """Construct UPDATE query."""
     # Extract set values and conditions
     set_match = re.search(r'set\s+(.+?)(?:\s+where|\s+$)', query.lower())
@@ -370,35 +365,35 @@ def construct_update_query(query: str, tables: List[str], conn: pyodbc.Connectio
         return f"UPDATE {tables[0]} SET {set_values}{where_clause}"
     return ""
 
-def construct_delete_query(query: str, tables: List[str], conn: pyodbc.Connection) -> str:
+def construct_delete_query(query: str, tables: List[str], conn: psycopg2.extensions.connection) -> str:
     """Construct DELETE query."""
     # Extract conditions
     where_match = re.search(r'where\s+(.+?)$', query.lower())
     where_clause = f" WHERE {where_match.group(1)}" if where_match else ""
     return f"DELETE FROM {tables[0]}{where_clause}"
 
-def get_table_relationships(conn: pyodbc.Connection) -> Dict[str, List[Dict[str, str]]]:
+def get_table_relationships(conn: psycopg2.extensions.connection) -> Dict[str, List[Dict[str, str]]]:
     """
     Get relationships between tables using foreign keys.
     
     Args:
-        conn: MS SQL Server connection
+        conn: PostgreSQL connection
         
     Returns:
         Dict mapping table names to their relationships
     """
     query = """
     SELECT
-        t1.name AS table_name,
-        c1.name AS column_name,
-        t2.name AS foreign_table_name,
-        c2.name AS foreign_column_name
-    FROM sys.foreign_keys fk
-    INNER JOIN sys.tables t1 ON fk.parent_object_id = t1.object_id
-    INNER JOIN sys.tables t2 ON fk.referenced_object_id = t2.object_id
-    INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-    INNER JOIN sys.columns c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
-    INNER JOIN sys.columns c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id;
+        tc.table_name,
+        kcu.column_name,
+        ccu.table_name AS foreign_table_name,
+        ccu.column_name AS foreign_column_name
+    FROM information_schema.table_constraints AS tc
+    JOIN information_schema.key_column_usage AS kcu
+        ON tc.constraint_name = kcu.constraint_name
+    JOIN information_schema.constraint_column_usage AS ccu
+        ON ccu.constraint_name = tc.constraint_name
+    WHERE tc.constraint_type = 'FOREIGN KEY';
     """
     df = pd.read_sql(query, conn)
     
@@ -547,7 +542,7 @@ def construct_smart_query(intent: Dict[str, Any], relationships: Dict[str, List[
     
     return query
 
-def get_schema_info(conn: pyodbc.Connection) -> str:
+def get_schema_info(conn: psycopg2.extensions.connection) -> str:
     """
     Get database schema information in a format suitable for LLM.
     """
@@ -606,7 +601,7 @@ Important rules:
    - Use appropriate WHERE conditions based on the query intent
    - Use ILIKE for case-insensitive text matching
    - Include any specified limits or ordering
-4. Be valid SQL syntax
+4. Be valid PostgreSQL syntax
 
 Example queries:
 1. "show me 2 products":
@@ -690,23 +685,34 @@ def execute_sql_query(query: str) -> Dict[str, Any]:
         if 'conn' in locals():
             conn.close()
 
-def get_db_connection() -> pyodbc.Connection:
-    """Get a connection to the MS SQL Server database."""
-    conn_str = (
-        "DRIVER={ODBC Driver 18 for SQL Server};"
-        "SERVER=localhost,1433;"
-        "DATABASE=master;"
-        "UID=sa;"
-        "PWD=YourStrong@Passw0rd;"
-        "TrustServerCertificate=yes;"
-    )
-    return pyodbc.connect(conn_str)
+def get_db_connection() -> psycopg2.extensions.connection:
+    """
+    Get a PostgreSQL database connection using environment variables.
+    
+    Returns:
+        PostgreSQL connection object
+    """
+    # Get connection parameters from environment variables
+    db_params = {
+        'dbname': os.getenv('POSTGRES_DB'),
+        'user': os.getenv('POSTGRES_USER'),
+        'password': os.getenv('POSTGRES_PASSWORD'),
+        'host': os.getenv('POSTGRES_HOST', 'localhost'),
+        'port': os.getenv('POSTGRES_PORT', '5432')
+    }
+
+    # Check if required parameters are present
+    if not all([db_params['dbname'], db_params['user'], db_params['password']]):
+        raise ValueError("Missing required PostgreSQL connection parameters in environment variables")
+
+    # Connect to PostgreSQL
+    return psycopg2.connect(**db_params)
 
 root_agent = Agent(
     model='gemini-2.0-flash-001',
     name='sql_agent',
-    description='An intelligent MS SQL Server agent that can understand natural language queries and execute SQL commands',
-    instruction="""I am an intelligent MS SQL Server agent that can:
+    description='An intelligent PostgreSQL agent that can understand natural language queries and execute SQL commands',
+    instruction="""I am an intelligent PostgreSQL agent that can:
 1. Execute SQL queries and return the results
 2. Understand natural language queries and convert them to SQL
 3. Automatically identify relevant tables and columns

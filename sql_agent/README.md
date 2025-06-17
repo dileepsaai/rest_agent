@@ -70,3 +70,19 @@ Example queries:
 - Verify your Twilio webhook URL is correctly configured
 - Ensure all environment variables are properly set
 - Check database connectivity
+
+
+docker run -e "ACCEPT_EULA=Y" \
+  -e "SA_PASSWORD=YourStrong@Passw0rd" \
+  -p 1433:1433 \
+  --name ms-sql \
+  -d mcr.microsoft.com/mssql/server:2022-latest
+
+
+docker cp init-ms.sql ms-sql:/init.sql
+
+docker run -it --rm \
+  --network container:ms-sql \
+  -v $(pwd)/init-ms.sql:/tmp/init.sql \
+  mcr.microsoft.com/mssql-tools \
+  /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'YourStrong@Passw0rd' -i /tmp/init.sql

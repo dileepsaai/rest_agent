@@ -1,0 +1,17 @@
+# Before installing requirements, install ODBC driver for macOS:
+# brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
+# brew update
+# brew install msodbcsql18
+
+google-adk[database]==0.3.0
+yfinance==0.2.56
+psutil==5.9.5
+litellm==1.66.3
+google-generativeai==0.8.5
+python-dotenv==1.1.0
+pyodbc==5.2.0
+pandas==2.2.0
+deprecated==1.2.14
+flask==3.0.0
+twilio==8.10.0
+flask-cors==4.0.0
