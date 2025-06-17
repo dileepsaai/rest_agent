@@ -11,9 +11,16 @@ from datetime import datetime
 from pandas import Timestamp
 import difflib
 from decimal import Decimal
+from google.generativeai import GenerativeModel
+import google.generativeai as genai
+
 
 # Load environment variables
 load_dotenv()
+
+# Initialize Gemini
+genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+model = GenerativeModel('gemini-pro')
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -535,30 +542,106 @@ def construct_smart_query(intent: Dict[str, Any], relationships: Dict[str, List[
     
     return query
 
+def get_schema_info(conn: psycopg2.extensions.connection) -> str:
+    """
+    Get database schema information in a format suitable for LLM.
+    """
+    tables = get_all_tables(conn)
+    schema_info = []
+    
+    # First, get all relationships
+    relationships = get_table_relationships(conn)
+    
+    # Then build schema info with relationships
+    for table in tables:
+        schema = get_table_schema(conn, table)
+        table_info = f"Table: {table}\n"
+        table_info += "Columns:\n"
+        for col, type_ in zip(schema['columns'], schema['types']):
+            table_info += f"- {col} ({type_})\n"
+        
+        # Add relationship information
+        if table in relationships:
+            table_info += "Relationships:\n"
+            for rel in relationships[table]:
+                table_info += f"- {rel['column']} -> {rel['references']['table']}.{rel['references']['column']}\n"
+        
+        # Add sample data for better understanding
+        try:
+            sample_query = f"SELECT * FROM {table} LIMIT 1"
+            sample_df = pd.read_sql(sample_query, conn)
+            if not sample_df.empty:
+                table_info += "Sample Data:\n"
+                for col in sample_df.columns:
+                    table_info += f"- {col}: {sample_df[col].iloc[0]}\n"
+        except:
+            pass
+        
+        schema_info.append(table_info)
+    
+    return "\n".join(schema_info)
+
+def construct_query_with_llm(natural_query: str, schema_info: str) -> str:
+    """
+    Use LLM to construct SQL query from natural language.
+    """
+    prompt = f"""You are a SQL expert. Given the following database schema and relationships:
+
+{schema_info}
+
+Convert this natural language query to SQL:
+"{natural_query}"
+
+Important rules:
+1. Analyze the query to determine the main table(s) to query
+2. Use proper JOINs based on the relationships shown in the schema
+3. For any query:
+   - Start with the most relevant table(s)
+   - Join with related tables using the relationships shown
+   - Use appropriate WHERE conditions based on the query intent
+   - Use ILIKE for case-insensitive text matching
+   - Include any specified limits or ordering
+4. Be valid PostgreSQL syntax
+
+Example queries:
+1. "show me 2 products":
+   SELECT * FROM products LIMIT 2
+
+2. "coupons for Macbook":
+   SELECT c.* 
+   FROM coupons c
+   JOIN product_coupons pc ON c.coupon_id = pc.coupon_id
+   JOIN products p ON pc.product_id = p.product_id
+   WHERE p.name ILIKE '%Macbook%'
+
+3. "orders with Macbook products":
+   SELECT o.* 
+   FROM orders o
+   JOIN products p ON o.product_id = p.product_id
+   WHERE p.name ILIKE '%Macbook%'
+
+Return ONLY the SQL query without any explanation.
+
+SQL Query:"""
+
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
 def execute_sql_query(query: str) -> Dict[str, Any]:
     """
-    Execute a SQL query and return the results.
-    
-    Args:
-        query (str): SQL query to execute
-        
-    Returns:
-        Dict[str, Any]: Query results or error message
+    Execute SQL query and return results.
     """
     try:
+        # Check if this is a natural language query
+        if not query.strip().upper().startswith(('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER')):
+            # Get schema information for LLM
+            schema_info = get_schema_info(None)
+            # Use LLM to construct SQL query
+            query = construct_query_with_llm(query, schema_info)
+            print(f"Generated SQL query: {query}")  # Debug print
+
+        # Execute query
         conn = get_db_connection()
-        
-        # If query is a natural language query, process it
-        if not query.strip().upper().startswith(('SELECT', 'INSERT', 'UPDATE', 'DELETE')):
-            # Extract query intent
-            intent = extract_query_intent(query)
-            
-            # Get table relationships
-            relationships = get_table_relationships(conn)
-            
-            # Construct smart query
-            query = construct_smart_query(intent, relationships)
-        
         cursor = conn.cursor()
         cursor.execute(query)
         
@@ -578,12 +661,24 @@ def execute_sql_query(query: str) -> Dict[str, Any]:
                 for row in rows
             ]
             
-            return {"success": True, "data": result}
+            return {
+                "status": "success",
+                "data": result,
+                "row_count": len(result)
+            }
         else:
-            return {"success": True, "data": []}
-            
+            return {
+                "status": "success",
+                "data": [],
+                "row_count": 0
+            }
     except Exception as e:
-        return {"success": False, "error": f"PostgreSQL query failed: {str(e)}"}
+        # Log the error for debugging but return a user-friendly message
+        print(f"Error executing query: {str(e)}")  # Debug print
+        return {
+            "status": "error",
+            "message": "I couldn't process that query. Could you please rephrase it?"
+        }
     finally:
         if 'cursor' in locals():
             cursor.close()

@@ -1,98 +1,72 @@
-# SQL Agent
+# WhatsApp SQL Agent Integration
 
-A PostgreSQL agent built using Google's ADK framework that can execute queries and retrieve data from your PostgreSQL database.
+This project integrates a SQL agent with WhatsApp using Twilio, allowing users to query their database through WhatsApp messages.
 
-## Features
+## Setup Instructions
 
-- Execute SQL queries and retrieve data from PostgreSQL
-- Handle various types of SQL queries (SELECT, INSERT, UPDATE, DELETE)
-- Structured response format with success/error information
-- Powered by Google's Gemini 2.0 Flash model
+1. **Install Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## Prerequisites
+2. **Environment Variables**
+   Create a `.env` file with the following variables:
+   ```
+   # Database Configuration
+   POSTGRES_DB=your_database_name
+   POSTGRES_USER=your_database_user
+   POSTGRES_PASSWORD=your_database_password
+   POSTGRES_HOST=your_database_host
+   POSTGRES_PORT=5432
 
-- Python 3.7 or higher
-- pip (Python package installer)
-- PostgreSQL database server
+   # Google API Configuration
+   GOOGLE_API_KEY=your_google_api_key
 
-## Installation
+   # Twilio Configuration
+   TWILIO_ACCOUNT_SID=your_twilio_account_sid
+   TWILIO_AUTH_TOKEN=your_twilio_auth_token
+   ```
 
-1. Make sure you have the required dependencies installed:
-```bash
-pip install -r requirements.txt
-```
+3. **Twilio Setup**
+   - Sign up for a Twilio account at https://www.twilio.com
+   - Get your Account SID and Auth Token from the Twilio Console
+   - Set up a WhatsApp Sandbox in your Twilio Console
+   - Configure the webhook URL in your Twilio WhatsApp Sandbox settings to point to your server's `/webhook` endpoint
 
-2. Set up environment variables:
-Create a `.env` file in the root directory and add your PostgreSQL connection details:
-```
-GOOGLE_API_KEY=your_api_key_here
-POSTGRES_DB=your_database_name
-POSTGRES_USER=your_username
-POSTGRES_PASSWORD=your_password
-POSTGRES_HOST=localhost  # or your database host
-POSTGRES_PORT=5432      # default PostgreSQL port
-```
+4. **Run the Application**
+   ```bash
+   python bot.py
+   ```
 
-Note: Make sure to replace the PostgreSQL connection parameters with your actual database details.
+5. **Expose Your Server**
+   - Use ngrok or a similar tool to expose your local server:
+   ```bash
+   ngrok http 5000
+   ```
+   - Update your Twilio webhook URL with the ngrok URL
 
-## Running with ADK Web Interface
+## Usage
 
-1. Make sure your virtual environment is activated:
-```bash
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+1. Send a message to your Twilio WhatsApp number
+2. Type your SQL query or natural language query
+3. Receive the results directly in WhatsApp
 
-2. Start the ADK web interface:
-```bash
-adk web
-```
+Example queries:
+- "Show me all users"
+- "What are the top 5 products by sales?"
+- "Add a new user with name John and email john@example.com"
 
-3. Open your web browser and navigate to:
-```
-http://localhost:8000
-```
+## Security Considerations
 
-4. In the ADK web interface:
-   - Select the "sql_agent" from the list of available agents
-   - You can now interact with the agent through the chat interface
-   - Try commands like:
-     - "Show me all users from the users table"
-     - "What are the top 5 products by sales?"
-     - "Insert a new user into the users table"
-     - "Update the price of product with ID 123"
+- Keep your `.env` file secure and never commit it to version control
+- Use HTTPS in production
+- Implement rate limiting for the webhook endpoint
+- Validate and sanitize incoming messages
+- Use appropriate database user permissions
 
-The agent will respond with structured data in the chat interface, showing:
-- Success/failure status
-- Query results or error message
-- Row count (for SELECT queries)
+## Troubleshooting
 
-## Example Queries
-
-Here are some example queries you can try:
-
-1. Basic SELECT queries:
-   - "Show me all users from the users table"
-   - "List all products with price greater than $100"
-   - "Get the latest 10 orders"
-
-2. Aggregation queries:
-   - "What are the top 5 products by sales?"
-   - "Show me total sales by month"
-   - "Calculate average order value by customer"
-
-3. JOIN queries:
-   - "Show me all orders with customer details"
-   - "List products with their category names"
-   - "Get employee details with their department information"
-
-4. Data modification:
-   - "Insert a new user into the users table"
-   - "Update the price of product with ID 123"
-   - "Delete all inactive users"
-
-## Dependencies
-
-- google-adk[database]==0.3.0
-- psycopg2-binary==2.9.9
-- pandas==2.2.0
-- python-dotenv==1.1.0 
+- Check the Flask application logs for errors
+- Verify your Twilio webhook URL is correctly configured
+- Ensure all environment variables are properly set
+- Check database connectivity
