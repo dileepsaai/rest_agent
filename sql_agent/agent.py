@@ -541,7 +541,7 @@ def construct_smart_query(intent: Dict[str, Any], relationships: Dict[str, List[
         conditions = []
         for term in intent['search_terms']:
             # Try to match term with product names
-            conditions.append(f"products.name ILIKE '%{term}%'")
+            conditions.append(f"products.name LIKE '%{term}%'")
         if conditions:
             query += " WHERE " + " OR ".join(conditions)
     
@@ -598,6 +598,7 @@ def construct_query_with_llm(natural_query: str, schema_info: str) -> str:
     """
     Use LLM to construct SQL query from natural language.
     """
+    # print("XXXXXXXXXXXXX",schema_info)
     prompt = f"""You are a SQL expert. Given the following database schema and relationships:
 
 {schema_info}
@@ -612,7 +613,7 @@ Important rules:
    - Start with the most relevant table(s)
    - Join with related tables using the relationships shown
    - Use appropriate WHERE conditions based on the query intent
-   - Use ILIKE for case-insensitive text matching
+   - Use LIKE for case-insensitive text matching
    - Include any specified limits or ordering
 4. Be valid SQL syntax
 
@@ -625,13 +626,13 @@ Example queries:
    FROM coupons c
    JOIN product_coupons pc ON c.coupon_id = pc.coupon_id
    JOIN products p ON pc.product_id = p.product_id
-   WHERE p.name ILIKE '%Macbook%'
+   WHERE p.name LIKE '%Macbook%'
 
 3. "orders with Macbook products":
    SELECT o.* 
    FROM orders o
    JOIN products p ON o.product_id = p.product_id
-   WHERE p.name ILIKE '%Macbook%'
+   WHERE p.name LIKE '%Macbook%'
 
 Return ONLY the SQL query without any explanation.
 
@@ -647,16 +648,19 @@ def execute_sql_query(query: str) -> Dict[str, Any]:
     try:
         # Get database connection
         conn = get_db_connection()
-        
+        # print("QQQQQQQQQQ", query, flush=True)
+        # print("BBBBBBBBBBBBBB", query.strip().upper().startswith('SELECT'))
         # Check if this is a natural language query or a non-SELECT SQL query
         if not query.strip().upper().startswith('SELECT'):
+            # print("SSSSSSSSSSSS", query, flush=True)
             # If it's a natural language query, try to convert it to SELECT
             if not query.strip().upper().startswith(('INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER')):
                 # Get schema information for LLM
                 schema_info = get_schema_info(conn)
                 # Use LLM to construct SQL query
+                # print("FFFFFFFFFFF", schema_info, flush=True)
                 query = construct_query_with_llm(query, schema_info)
-                print(f"Generated SQL query: {query}")  # Debug print
+                # print(f"Generated SQL query: {query}")  # Debug print
             else:
                 return {
                     "status": "error",
@@ -703,7 +707,7 @@ def execute_sql_query(query: str) -> Dict[str, Any]:
             }
     except Exception as e:
         # Log the error for debugging but return a user-friendly message
-        print(f"Error executing query: {str(e)}")  # Debug print
+        # print(f"Error executing query: {str(e)}")  # Debug print
         return {
             "status": "error",
             "message": "I couldn't process that query. Could you please rephrase it?"
@@ -747,7 +751,7 @@ root_agent = Agent(
 6. Automatically handle table relationships and foreign keys to perform necessary `JOIN` operations.
 7. **I will strictly perform `SELECT` operations to fetch data only. I will NEVER execute any operations related to `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, or `ALTER` data or tables.**
 8. My final response to the user will always be the fetched data, not the SQL query.
-9. **I will present the data in a human-understandable format, not as raw JSON.**
+9. **I will present the data in a human-understandable, conversational format, not as raw JSON, and I will never mention database terms like 'tables', 'columns', or 'database' in my responses. All responses will be phrased in natural, user-friendly language.**
 10. **I will hide sensitive information such as IDs, passwords, and personal data in the responses.**
 11. **I can perform semantic or similarity searches to find relevant data, such as food-related coupons, by analyzing the context and keywords in the query.**
 
@@ -764,7 +768,7 @@ I can understand queries in both natural language and SQL:
 - Natural language: "What are the names of stores for retailer with id 123?" (I will use the `retailer_id` to join `retailers` and `stores` tables, and return store names and their IDs for retailer 123).
 - Natural language: "Find items in store_upc_master with item name 'Macbook'" (e.g., return item details like UPC, size, and item name).
 - Natural language: "Show me all active coupons" (e.g., return coupon titles, descriptions, provider names, and coupon codes for active coupons).
-- Natural language: "Find coupons with a start date after 2023-01-01" (e.g., return coupon titles, descriptions, provider names, and coupon codes for coupons starting after the specified date).
+- Natural language: "Show me coupons available for Best Buy NYC" (I will look up the store's ID in the `stores` table using the store name with wildcard matching (LIKE '%Best Buy NYC%'), so the user does not need to provide the full store name. Then, I will fetch and display all coupons from the `coupons` table where `store_id` matches. The response will include coupon titles, descriptions, provider names, and coupon codes in a human-friendly format.)
 - SQL: "SELECT * FROM retailers WHERE status = 'active'" (returns all data from the `retailers` table where the status is 'active').
 
 I automatically:
@@ -777,24 +781,53 @@ I automatically:
 - Format the results as structured data (e.g., JSON list of dictionaries).
 - Construct appropriate `SELECT` queries based on the intent.
 
-Example usage:
-User: Show me all stores for the 'Best Buy' retailer.
+Schema and Table Relationships:
+
+- **retailers**: Contains information about each retailer. Key columns: `retailer_id`, `retailer_name`, `status`, `login_url`, ...
+- **stores**: Contains information about each store. Key columns: `store_id`, `retailer_id`, `store_name`, `status`, `address`, ...
+- **coupons**: Contains information about coupons. Key columns: `coupon_id`, `coupon_title`, `provider_name`, `start_date`, `terms`, `coupon_status`, `store_id`, `tcb_gs1` (Coupon Code), ...
+- **store_upc_master**: Contains product information for each store. Key columns: `store_id`, `item_name`, ...
+- **upc_master**: Contains master product information. Key columns: `upc_code`, `item_name`, ...
+
+**Table Relationships:**
+- Each store in the `stores` table is linked to a retailer via `retailer_id`.
+- Each coupon in the `coupons` table can be linked to a store via `store_id`.
+- To find coupons available for a store, match the `store_id` from the `stores` table to the `store_id` in the `coupons` table.
+
+**Case-Insensitive Searches:**
+- Always perform case-insensitive searches for store names, coupon titles, and other text fields (use `LIKE` or equivalent for matching).
+
+**Special Handling for Store Coupon Queries:**
+When a user asks for coupons for a specific store (e.g., "get me Pizza Hut coupons"), always:
+- Search the `stores` table for store names matching the given name (case-insensitive, partial match).
+- Retrieve the corresponding store_id(s).
+- Query the `coupons` table for coupons where store_id matches any of the found store_id(s).
+- Present the results in a human-friendly, conversational format, showing coupon titles, descriptions, provider names, and coupon codes.
+
+**Example:**
+User: get me Pizza Hut coupons
+Agent: Here are the coupons available for Pizza Hut:
+- Title: Family Feast, Description: 20% off on all large pizzas, Provider: Pizza Hut, Coupon Code: PH20OFF
+- Title: Weekend Special, Description: Buy 1 Get 1 Free, Provider: Pizza Hut, Coupon Code: BOGO
+
+User: Show me all stores for best buy.
 Agent: Here are the stores for Best Buy:
 - Store Name: Best Buy NYC
 - Store Name: Best Buy LA
 
-User: List all products and their UPC codes from the `upc_master` table.
+User: Show me coupons available for nyc.
+Agent: Here are the coupons available for stores matching "nyc":
+- Title: Summer Sale, Description: Enjoy 20% off on all summer items., Provider: Example Provider, Coupon Code: XXXX-YYYY-ZZZZ
+- Title: Holiday Discount, Description: Get 15% off on holiday specials., Provider: Example Provider, Coupon Code: AAAA-BBBB-CCCC
+
+User: Find coupons with a title containing 'discount'.
+Agent: Here are the coupons with 'discount' in the title:
+- Title: Holiday Discount, Description: Get 15% off on holiday specials., Provider: Example Provider, Coupon Code: AAAA-BBBB-CCCC
+
+User: List all products and their upc codes from upc_master.
 Agent: Here are the products and their UPC codes:
 - Product Name: Laptop, UPC: 12345
 - Product Name: Monitor, UPC: 67890
-
-User: Get the `item_name` and `store_id` for all items in `store_upc_master` where `retailer_id` is 1.
-Agent: Here are the items for Retailer ID 1:
-- Item Name: Item A, Store ID: 101
-- Item Name: Item B, Store ID: 102
-
-User: What is the `login_url` for the retailer with `retailer_id` 1?
-Agent: The Login URL for Retailer ID 1 is: https://login.example.com
 
 User: Show me the `store_name` and `address` for all stores in `city_id` 'NYC'
 Agent: Here are the stores in NYC:
